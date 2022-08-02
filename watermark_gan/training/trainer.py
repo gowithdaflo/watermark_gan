@@ -43,13 +43,13 @@ class Trainer:
         self.bce_logits_loss = torch.nn.BCEWithLogitsLoss() # − [y * log(x) + (1−y) * log(1−x)]
         # self.bce_logits_loss = partial(sigmoid_focal_loss, alpha=0.25, gamma=2, reduction="mean")
         self.gan_weight = 1e-3
-        self.vgg_weight = 2e-6 # rescale vgg fmaps to be of the same scale as mse loss
+        self.vgg_weight = 2e-5 # rescale vgg fmaps to be of the same scale as mse loss
         self.l1_weight = 1
         self.vgg_loss = VGGLoss(device=device)
         self.l1_loss = torch.nn.L1Loss()
-        self.mask_weight = 1
+        self.mask_weight = 1.0
             
-        self.metrics = Metrics(["lossG", "lossD"])
+        self.metrics = Metrics(["lossG", "lossD", "mask_miou"])
         self.summary_writer = SummaryWriter(log_dir)
         
         self._step = 0
@@ -88,13 +88,13 @@ class Trainer:
     def train_on_batch(self, sample):
         self._step+=1
         sample = {k: v.to(self.device) for k, v in sample.items()}
-        inputs, targets = sample["inputs"], sample["targets"]
+        inputs, targets, mask = sample["inputs"], sample["targets"], sample["mask"]
         # inputs, targets, mask, recep_mask = sample["inputs"], sample["targets"], sample["mask"], sample["recep_mask"]
 
         self.generator.train()
         self.discriminator.train()
         
-        gen_fake = self.generator(inputs)
+        gen_fake, gen_mask = self.generator(inputs)
         
         if self._pretrain_mode:
             dis_fake = torch.tensor(0.0)
@@ -112,13 +112,19 @@ class Trainer:
         ### -------------------------- Train Generator -------------------------- ###
         self.generator.zero_grad()
         lossG = self.generator_loss(gen_fake, dis_fake.detach(), targets)
+        lossG += self.mask_weight * self.bce_logits_loss(gen_mask, mask.double()) # mask loss
         
         lossG.backward()
         self.optimG.step()
 
+        with torch.no_grad():
+            gen_mask = gen_mask > 0
+            mask_miou = (gen_mask * mask).sum() / (gen_mask + mask).sum()
+        
         self.metrics.update_state(inputs.shape[0],
                                 lossG = lossG.detach(),
                                 lossD = lossD.detach(),
+                                mask_miou = mask_miou.detach()
                                 )
             
     def train_epoch(self):
@@ -142,15 +148,15 @@ class Trainer:
                 
             inputs = samples["inputs"]
             targets = samples["targets"]
-            mask = samples["mask"] * 2 - 1
-            mask = mask.repeat(1,3,1,1)
+            mask = (samples["mask"] * 2 - 1).repeat(1,3,1,1)
 
-            fake = self.generator(inputs)
+            fake, pred_mask = self.generator(inputs)
+            pred_mask = (torch.sigmoid(pred_mask) * 2 - 1).repeat(1,3,1,1)
             
-        merged = float_to_uint8(torch.cat([inputs, targets, fake, mask], dim=3))
+        merged = float_to_uint8(torch.cat([inputs, targets, fake, pred_mask, mask], dim=3))
         img_grid_merged = make_grid(merged, normalize=False, nrow=1)
         self.summary_writer.add_image(
-            "Image - Image_GT - Output", img_grid_merged, global_step=self._step
+            "Image - Target - Pred - Pred Mask - Mask", img_grid_merged, global_step=self._step
             )  
         return merged
             
@@ -164,111 +170,3 @@ class Trainer:
         self.metrics.reset_states()
 
         logging.info(f"Epoch {epoch}: " + ", ".join([f"{key}: {result[key]:.4f}" for key in self.metrics.keys]))
-
-class MaskTrainer:
-    def __init__(self, 
-                model, 
-                dataset,
-                batch_size,
-                learning_rate,
-                log_dir,
-                device="cpu"
-                ):
-        
-        self.device = device
-        self.batch_size = batch_size
-        self.model = model.to(device)
-        
-        self.dataset = dataset
-        self.data_loader = DataLoader(dataset, 
-                                      batch_size=batch_size, 
-                                      drop_last=False,
-                                      num_workers=2,
-                                      pin_memory=True)
-        
-        self._load_test_samples()
-        
-        self.optim = optim.Adam(self.model.parameters(), lr=learning_rate, betas=(0.5, 0.999))#, weight_decay=weight_decayG)
-        
-        self.bce_logits_loss = torch.nn.BCEWithLogitsLoss() # − [y * log(x) + (1−y) * log(1−x)]
-        # self.bce_logits_loss = partial(sigmoid_focal_loss, alpha=0.25, gamma=2, reduction="mean")
-            
-        self.metrics = Metrics(["loss","mask_miou"])
-        self.summary_writer = SummaryWriter(log_dir)
-        
-        self._step = 0
-        
-    def _load_test_samples(self):
-        self.test_samples = {"inputs": [], "targets": [], "mask": []}
-        for i in range(8):
-            sample = self.dataset[i]
-            for key in self.test_samples.keys():
-                self.test_samples[key].append( sample[key] )
-        for key, value in self.test_samples.items():
-            self.test_samples[key] = torch.stack(value, dim=0).to(self.device)
-        
-    def train_on_batch(self, sample):
-        self._step+=1
-        sample = {k: v.to(self.device) for k, v in sample.items()}
-        inputs, mask = sample["inputs"], sample["mask"]
-
-        self.model.train()
-        
-        predicted_mask = self.model(inputs)
-        
-        self.model.zero_grad()
-        loss = self.bce_logits_loss(predicted_mask, mask.double()) # mask loss
-        loss.backward()
-        self.optimG.step()
-
-        with torch.no_grad():
-            gen_mask = predicted_mask > 0
-            mask_miou = (gen_mask * mask).sum() / (gen_mask + mask).sum()
-        
-        self.metrics.update_state(inputs.shape[0],
-                                loss = loss.detach(),
-                                mask_miou = mask_miou.detach(),
-                                )
-            
-    def train_epoch(self):
-        for sample in self.data_loader:
-            self.train_on_batch(sample)
-        self.on_epoch_end()
-        
-    def test_on_batch(self):
-        """ 
-        Args:
-            noise: torch.Tensor
-                Generate fake images from this noise.
-            Nmax: int, optional
-                Maximum number of images to save.
-        """
-        self.generator.eval()
-        
-        with torch.no_grad():
-            inputs = self.test_samples["inputs"]
-            mask_target = self.test_samples["mask"]
-            mask = self.model(inputs)
-            
-            # to match other floats
-            mask = torch.sigmoid(mask).repeat(1,3,1,1).double()*2-1
-            mask_target = mask_target.repeat(1,3,1,1).double()*2-1
-            
-        merged = float_to_uint8(torch.cat([inputs, mask, mask_target], dim=3))
-        img_grid_merged = make_grid(merged, normalize=False, nrow=1)
-        self.summary_writer.add_image(
-            "Image - Mask - Mask_GT", img_grid_merged, global_step=self._step
-            )  
-        return merged
-            
-    def on_epoch_end(self):
-        """
-        """
-        epoch = int(self._step// (len(self.dataset)//self.batch_size) )
-        
-        result = self.metrics.result()
-        self.metrics.write(self.summary_writer, self._step)
-        self.metrics.reset_states()
-
-        logging.info(f"Epoch {epoch}: " + ", ".join([f"{key}: {result[key]:.4f}" for key in self.metrics.keys]))
-

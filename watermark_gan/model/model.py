@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
-from .layers import ConvBlock, UpSampleBlock, ConvNextBlock, ResidualBlock
+from .layers import ConvBlock, UpSampleBlock, ConvNextBlock, ResidualBlock, MaskBlock
 from .initialization import he_orthogonal_init
-from .mask_model import MaskBlock
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -42,6 +41,8 @@ class Generator(nn.Module):
                                                             stride=2,
                                                             apply_batchnorm=True))
             in_channels = out_channels
+        
+        mask_in_channels = in_channels
             
         self.res_blocks = nn.Sequential(*[ResidualBlock(in_channels) for _ in range(nResidualBlocks)])
             
@@ -61,6 +62,22 @@ class Generator(nn.Module):
             ConvBlock( features, nOutputChannels, kernel_size=7, padding="same", padding_mode="reflect", apply_batchnorm=False),
             nn.Tanh()
         )
+        
+        self.mask_blocks = nn.ModuleList( [] )
+        nMaskBlocks = len(feature_list)-1
+        feature_list_reverse = reversed(feature_list[:-1])
+        for i, out_channels in enumerate(feature_list_reverse):
+            self.mask_blocks.add_module(f"mask_{i}", MaskBlock(mask_in_channels, 
+                                                            out_channels,
+                                                            apply_batchnorm=True if i<nMaskBlocks else False,
+                                                            activation=nn.GELU() if i<nMaskBlocks else nn.Identity()))
+            mask_in_channels = 2 * out_channels
+        # (None, 2*64, 128, 128)
+        self.last_mask = nn.Sequential( 
+            ConvBlock( mask_in_channels, features, kernel_size=3, padding="same", apply_batchnorm=False),
+            ConvBlock( features, features, kernel_size=3, padding="same", apply_batchnorm=False),
+            ConvBlock( features, 1, kernel_size=7, padding="same", padding_mode="reflect", apply_batchnorm=False, activation=nn.Identity()),
+        )
 
         # Initialize the weights
         self.apply(weights_init)
@@ -71,8 +88,11 @@ class Generator(nn.Module):
         for down in self.down_blocks:
             x = down(x)
             skips.append(x)
-        x = x + self.res_blocks(x)
+            
+        x_mask = x
+        skips_rev_mask = reversed(skips[:-1])
         
+        x = x + self.res_blocks(x)
         skips_rev = reversed(skips[:-1])
 
         # Upsampling image generator
@@ -81,7 +101,14 @@ class Generator(nn.Module):
             x = torch.cat([x, skip], dim=1)
         x = self.last(x)
         
-        return x
+        
+        # Mask detection
+        for mask, skip in zip(self.mask_blocks, skips_rev_mask):
+            x_mask = mask(x_mask)
+            x_mask = torch.cat([x_mask, skip], dim=1)
+        x_mask = self.last_mask(x_mask)
+        
+        return x, x_mask
     
     
 class Discriminator(nn.Module):

@@ -133,8 +133,8 @@ class ResidualBlock(nn.Module):
         self.survival_rate = survival_rate
         
         self.layers = nn.Sequential(
-            ConvBlock(channels, channels, kernel_size=3, activation=activation),
-            ConvBlock(channels, channels, kernel_size=3, activation=activation)
+            ConvBlock(channels, channels, kernel_size=kernel_size, activation=activation),
+            ConvBlock(channels, channels, kernel_size=kernel_size, activation=activation)
         )
         
     def forward(self, x):
@@ -146,4 +146,27 @@ class ResidualBlock(nn.Module):
         
         switch = torch.rand(x.shape[0], 1, 1, 1, device=x.device) < self.survival_rate
         return x/self.survival_rate * switch
+              
+class MaskBlock(nn.Module):
+    def __init__(self,
+                in_channels, 
+                out_channels, 
+                apply_batchnorm = True,
+                activation = nn.GELU()):
         
+        super().__init__()
+
+        self.layers = nn.Sequential( 
+                        # ConvNextBlock(in_channels,
+                        #             in_channels,
+                        #             kernel_size=7),
+                        UpSampleBlock(  in_channels,     
+                                        out_channels, 
+                                        kernel_size=3, 
+                                        apply_dropout=False,
+                                        apply_batchnorm=apply_batchnorm,
+                                        activation=activation)
+                    )
+    
+    def forward(self, x):
+        return self.layers(x)
