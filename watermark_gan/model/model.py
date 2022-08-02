@@ -83,11 +83,6 @@ class Generator(nn.Module):
         
         return x
     
-    # def remove_mark(self, image, gen_image, mask):
-    #     mask = mask.detach().repeat(1,3,1,1)
-    #     mask = mask > 0
-    #     image[mask] = gen_image[mask]
-    #     return image
     
 class Discriminator(nn.Module):
     def __init__(self, channelsImage, channelsTarget):
@@ -102,11 +97,10 @@ class Discriminator(nn.Module):
             self.layers.add_module(f"down_{i}", ConvBlock(in_channels,
                                                         out_channels,
                                                         stride=2 if i>0 else 1, 
-                                                        bias=(i==0), 
                                                         kernel_size=3,
                                                         apply_batchnorm=False,
                                                         apply_spectral_norm=True,
-                                                        activation=nn.LeakyReLU(0.2,inplace=True)))
+                                                        activation=nn.GELU()))
             in_channels = out_channels
         # (None, 256, 32, 32)
         self.layers.add_module("conv", nn.Conv2d(nChannels[-1],1,kernel_size=3, padding=1, padding_mode="reflect"))

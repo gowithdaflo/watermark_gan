@@ -61,13 +61,13 @@ class ConvBlock(nn.Module):
                 kernel_size = 3, 
                 stride = 1,
                 padding = 1,
-                bias = False,
                 apply_batchnorm = True,
                 apply_spectral_norm = False,
                 activation = nn.GELU(),
                 **kwargs
                 ):
         super().__init__()
+        bias = False if apply_batchnorm else True
         
         layer = nn.Conv2d(in_channels, 
                         out_channels, 
@@ -95,11 +95,11 @@ class UpSampleBlock(nn.Module):
                 in_channels, 
                 out_channels, 
                 kernel_size, 
-                bias = False,
                 apply_dropout = False,
                 apply_batchnorm = True,
                 activation = nn.GELU()):
         super().__init__()
+        bias = False if apply_batchnorm else True
 
         self.layers = nn.Sequential(
             nn.ConvTranspose2d( in_channels, 
