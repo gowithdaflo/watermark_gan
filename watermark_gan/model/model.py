@@ -59,8 +59,7 @@ class Generator(nn.Module):
         self.last = nn.Sequential( 
             ConvBlock( in_channels, features, kernel_size=3, padding="same", apply_batchnorm=False),
             ConvBlock( features, features, kernel_size=3, padding="same", apply_batchnorm=False),
-            ConvBlock( features, nOutputChannels, kernel_size=7, padding="same", padding_mode="reflect", apply_batchnorm=False),
-            nn.Tanh()
+            ConvBlock( features, nOutputChannels, kernel_size=7, padding="same", padding_mode="reflect", apply_batchnorm=False, activation=nn.Tanh()),
         )
         
         self.mask_blocks = nn.ModuleList( [] )
@@ -109,6 +108,11 @@ class Generator(nn.Module):
         x_mask = self.last_mask(x_mask)
         
         return x, x_mask
+    
+    def predict(self, x):
+        x_gen, x_mask = self.forward(x)
+        x_mask = torch.sigmoid(x_mask)
+        return x * (1-x_mask) + x_gen * x_mask 
     
     
 class Discriminator(nn.Module):

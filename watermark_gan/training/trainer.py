@@ -9,6 +9,7 @@ from ..utils.utils import float_to_uint8
 from .vgg_loss import VGGLoss
 from functools import partial
 import logging
+import os
 
 class Trainer:
     def __init__(self, 
@@ -22,6 +23,7 @@ class Trainer:
                 device="cpu"
                 ):
         
+        self.log_dir = log_dir
         self.device = device
         self.batch_size = batch_size
         self.generator = generator.to(device)
@@ -112,7 +114,7 @@ class Trainer:
         ### -------------------------- Train Generator -------------------------- ###
         self.generator.zero_grad()
         lossG = self.generator_loss(gen_fake, dis_fake.detach(), targets)
-        lossG += self.mask_weight * self.bce_logits_loss(gen_mask, mask.double()) # mask loss
+        lossG += self.mask_weight * self.bce_logits_loss(gen_mask, mask.float()) # mask loss
         
         lossG.backward()
         self.optimG.step()
@@ -143,17 +145,17 @@ class Trainer:
         self.generator.eval()
         
         with torch.no_grad():
-            if samples:
-                samples = {k: v.to(self.device) for k, v in samples.items()}
+            samples = {k: v.to(self.device) for k, v in samples.items()} if samples else self.test_samples
                 
             inputs = samples["inputs"]
             targets = samples["targets"]
             mask = (samples["mask"] * 2 - 1).repeat(1,3,1,1)
 
             fake, pred_mask = self.generator(inputs)
+            blended = self.generator.predict(inputs)
             pred_mask = (torch.sigmoid(pred_mask) * 2 - 1).repeat(1,3,1,1)
             
-        merged = float_to_uint8(torch.cat([inputs, targets, fake, pred_mask, mask], dim=3))
+        merged = float_to_uint8(torch.cat([inputs, targets, fake, blended, pred_mask, mask], dim=3))
         img_grid_merged = make_grid(merged, normalize=False, nrow=1)
         self.summary_writer.add_image(
             "Image - Target - Pred - Pred Mask - Mask", img_grid_merged, global_step=self._step
@@ -170,3 +172,28 @@ class Trainer:
         self.metrics.reset_states()
 
         logging.info(f"Epoch {epoch}: " + ", ".join([f"{key}: {result[key]:.4f}" for key in self.metrics.keys]))
+    
+    def save(self, path=None):
+        if path is None:
+            path = self.log_dir
+        if not os.path.exists(path):
+            os.makedirs(path)
+        
+        torch.save({"generator": self.generator.state_dict(),
+                    "discriminator": self.discriminator.state_dict()},
+                   f"{path}/models.pth")
+        torch.save({"generator": self.optimG.state_dict(),
+                    "discriminator": self.optimD.state_dict()},
+                   f"{path}/optimizers.pth")
+        
+    def restore(self, path=None):
+        if path is None:
+            path = self.log_dir
+        
+        model_checkpoint = torch.load(f"{path}/models.pth")
+        optim_checkpoint = torch.load(f"{path}/optimizers.pth")
+        self.generator.load_state_dict(model_checkpoint["generator"])
+        self.discriminator.load_state_dict(model_checkpoint["discriminator"])
+        self.optimG.load_state_dict(optim_checkpoint["generator"])
+        self.optimD.load_state_dict(optim_checkpoint["discriminator"])
+    

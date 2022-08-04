@@ -156,7 +156,6 @@ class WatermarkDataset(Dataset):
                 positions.append((int(x),int(y)))
         
         # draw text
-        opacity = 255
         for pos in positions:
             draw.text(pos, text, fill=(255,255,255, opacity), font=font)
             
@@ -237,12 +236,3 @@ class Scale(torch.nn.Module):
 
         return sample
 
-
-# dataset = WatermarkDataset("D:/Programmieren/gans/datasets/watermarks/train/no-watermark",
-#                            transform=transforms.Compose([RandomCrop(),
-#                                                         Scale(256)]))
-
-# sample = dataset[0]
-# plot_tensor(sample)
-
-        
