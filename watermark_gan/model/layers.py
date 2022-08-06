@@ -26,7 +26,7 @@ class ConvNextBlock(nn.Module):
                                 stride=1, 
                                 groups=1,
                                 padding="same",
-                                bias=bias)
+                                bias=False)
         
         self.layer_norm = LayerNorm(hidden_channels)
         

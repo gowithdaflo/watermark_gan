@@ -47,8 +47,8 @@ class Generator(nn.Module):
         self.res_blocks = nn.Sequential(*[ResidualBlock(in_channels) for _ in range(nResidualBlocks)])
             
         self.up_blocks = nn.ModuleList( [] )
-        feature_list_reverse = reversed(feature_list[:-1])
-        for i, out_channels in enumerate(feature_list_reverse):
+        feature_list_rev = feature_list[:-1][::-1]
+        for i, out_channels in enumerate(feature_list_rev):
             self.up_blocks.add_module(f"up_{i}", UpSampleBlock(in_channels,
                                                                 out_channels, 
                                                                 kernel_size=3,
@@ -59,23 +59,24 @@ class Generator(nn.Module):
         self.last = nn.Sequential( 
             ConvBlock( in_channels, features, kernel_size=3, padding="same", apply_batchnorm=False),
             ConvBlock( features, features, kernel_size=3, padding="same", apply_batchnorm=False),
-            ConvBlock( features, nOutputChannels, kernel_size=7, padding="same", padding_mode="reflect", apply_batchnorm=False, activation=nn.Tanh()),
+            ConvBlock( features, nOutputChannels, kernel_size=7, padding="same", padding_mode="reflect", apply_batchnorm=False, 
+                      activation=nn.Tanh()),
         )
         
         self.mask_blocks = nn.ModuleList( [] )
-        nMaskBlocks = len(feature_list)-1
-        feature_list_reverse = reversed(feature_list[:-1])
-        for i, out_channels in enumerate(feature_list_reverse):
+        for i, out_channels in enumerate(feature_list_rev):
             self.mask_blocks.add_module(f"mask_{i}", MaskBlock(mask_in_channels, 
                                                             out_channels,
-                                                            apply_batchnorm=True if i<nMaskBlocks else False,
-                                                            activation=nn.GELU() if i<nMaskBlocks else nn.Identity()))
-            mask_in_channels = 2 * out_channels
+                                                            apply_batchnorm=True if i<len(feature_list_rev)-1 else False,
+                                                            activation=nn.GELU() if i<len(feature_list_rev)-1 else nn.Identity()))
+            mask_in_channels = 2*out_channels
+            
         # (None, 2*64, 128, 128)
         self.last_mask = nn.Sequential( 
             ConvBlock( mask_in_channels, features, kernel_size=3, padding="same", apply_batchnorm=False),
             ConvBlock( features, features, kernel_size=3, padding="same", apply_batchnorm=False),
-            ConvBlock( features, 1, kernel_size=7, padding="same", padding_mode="reflect", apply_batchnorm=False, activation=nn.Identity()),
+            ConvBlock( features, 1, kernel_size=7, padding="same", padding_mode="reflect", apply_batchnorm=False, 
+                      activation=nn.Identity()),
         )
 
         # Initialize the weights

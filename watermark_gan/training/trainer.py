@@ -39,19 +39,22 @@ class Trainer:
         
         self._load_test_samples()
         
-        self.optimG = optim.Adam(self.generator.parameters(), lr=learning_rate, betas=(0.9, 0.999))#, weight_decay=weight_decayG)
-        self.optimD = optim.Adam(self.discriminator.parameters(), lr=learning_rate, betas=(0.9, 0.999))#, weight_decay=weight_decayG)
+        weight_decay = 2e-6
+        self.optimG = optim.AdamW(self.generator.parameters(), lr=learning_rate, betas=(0.9, 0.999), weight_decay=weight_decay)
+        self.optimD = optim.AdamW(self.discriminator.parameters(), lr=learning_rate, betas=(0.9, 0.999), weight_decay=weight_decay)
         
         self.bce_logits_loss = torch.nn.BCEWithLogitsLoss() # − [y * log(x) + (1−y) * log(1−x)]
         # self.bce_logits_loss = partial(sigmoid_focal_loss, alpha=0.25, gamma=2, reduction="mean")
         self.gan_weight = 1e-3
-        self.vgg_weight = 2e-5 # rescale vgg fmaps to be of the same scale as mse loss
+        self.vgg_weight = 2e-6 # rescale vgg fmaps to be of the same scale as mse loss
         self.l1_weight = 1
         self.vgg_loss = VGGLoss(device=device)
-        self.l1_loss = torch.nn.L1Loss()
-        self.mask_weight = 1.0
+        def l1_loss(inputs, targets):
+            return torch.abs(inputs-targets)
+        self.l1_loss = l1_loss # torch.nn.L1Loss(reduction=None)
+        self.mask_weight = 0.5
             
-        self.metrics = Metrics(["lossG", "lossD", "mask_miou"])
+        self.metrics = Metrics(["lossG", "lossD", "mask_miou", "l1_loss"])
         self.summary_writer = SummaryWriter(log_dir)
         
         self._step = 0
@@ -71,13 +74,13 @@ class Trainer:
         logging.info(f"Set pretrain mode to: {pretrain}")
         self._pretrain_mode = pretrain
         
-    def generator_loss(self, gen_fake, dis_fake, target):
+    def generator_loss(self, gen_fake, dis_fake, target, mask):
         # classify generated output as real
         if self._pretrain_mode:
             gan_loss = 0.0
         else:    
             gan_loss = self.gan_weight * self.bce_logits_loss(dis_fake, torch.ones_like(dis_fake))
-        l1_loss = self.l1_weight * self.l1_loss(gen_fake, target)
+        l1_loss = self.l1_weight * torch.mean(self.l1_loss(gen_fake, target) * (mask.float()*0.99+0.01))
         vgg_loss = self.vgg_weight * self.vgg_loss(gen_fake, target)
         return gan_loss + l1_loss + vgg_loss
     
@@ -106,14 +109,14 @@ class Trainer:
             dis_fake = self.discriminator(gen_fake.detach(), targets)
 
             ### ------------------------ Train Discriminator ------------------------ ###
-            self.discriminator.zero_grad()
+            self.discriminator.zero_grad(set_to_none=True)
             lossD = self.discriminator_loss(dis_real, dis_fake)
             lossD.backward()
             self.optimD.step()
 
         ### -------------------------- Train Generator -------------------------- ###
-        self.generator.zero_grad()
-        lossG = self.generator_loss(gen_fake, dis_fake.detach(), targets)
+        self.generator.zero_grad(set_to_none=True)
+        lossG = self.generator_loss(gen_fake, dis_fake.detach(), targets, mask)
         lossG += self.mask_weight * self.bce_logits_loss(gen_mask, mask.float()) # mask loss
         
         lossG.backward()
@@ -122,11 +125,13 @@ class Trainer:
         with torch.no_grad():
             gen_mask = gen_mask > 0
             mask_miou = (gen_mask * mask).sum() / (gen_mask + mask).sum()
+            l1_loss = torch.mean(self.l1_loss(gen_fake, targets))
         
         self.metrics.update_state(inputs.shape[0],
                                 lossG = lossG.detach(),
                                 lossD = lossD.detach(),
-                                mask_miou = mask_miou.detach()
+                                mask_miou = mask_miou,
+                                l1_loss=l1_loss
                                 )
             
     def train_epoch(self):
@@ -152,10 +157,9 @@ class Trainer:
             mask = (samples["mask"] * 2 - 1).repeat(1,3,1,1)
 
             fake, pred_mask = self.generator(inputs)
-            blended = self.generator.predict(inputs)
             pred_mask = (torch.sigmoid(pred_mask) * 2 - 1).repeat(1,3,1,1)
             
-        merged = float_to_uint8(torch.cat([inputs, targets, fake, blended, pred_mask, mask], dim=3))
+        merged = float_to_uint8(torch.cat([inputs, targets, fake, pred_mask, mask], dim=3))
         img_grid_merged = make_grid(merged, normalize=False, nrow=1)
         self.summary_writer.add_image(
             "Image - Target - Pred - Pred Mask - Mask", img_grid_merged, global_step=self._step
@@ -165,7 +169,7 @@ class Trainer:
     def on_epoch_end(self):
         """
         """
-        epoch = int(self._step// (len(self.dataset)//self.batch_size) )
+        epoch = int(self._step//len(self.data_loader))
         
         result = self.metrics.result()
         self.metrics.write(self.summary_writer, self._step)
