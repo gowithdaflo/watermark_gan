@@ -193,10 +193,11 @@ def create_test_image(img_path, pos, text, opacity, font_type, font_size):
         draw = ImageDraw.Draw(watermark)
         # Creating Text
         draw.text(pos, text, fill=(255,255,255, opacity), font=ImageFont.truetype(font_type, font_size))
+        mask = np.asarray(watermark)[...,-1] > 0
         
         output = np.asarray(Image.alpha_composite(img, watermark)) 
         output = uint8_to_float(output[...,:3])
-        return torch.FloatTensor(output).permute(2,0,1)
+        return torch.FloatTensor(output).permute(2,0,1), mask
     
     
     # def _gen_image(self, img):
