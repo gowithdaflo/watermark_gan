@@ -7,7 +7,8 @@ import torch
 from .metrics import Metrics
 from ..utils.utils import float_to_uint8
 from .vgg_loss import VGGLoss
-from functools import partial
+from .replay_memory import ReplayMemory
+from .data_pipeline import Dataset
 import logging
 import os
 
@@ -15,18 +16,21 @@ class Trainer:
     def __init__(self, 
                 generator, 
                 discriminator, 
-                dataset,
-                batch_size,
-                learning_rate,
-                log_dir,
-                pretrain = True,
-                device="cpu"
+                dataset: Dataset,
+                batch_size: int,
+                learning_rate: float,
+                log_dir: str,
+                pretrain: bool = True,
+                replay_memory: ReplayMemory = None,
+                device: str = "cpu"
                 ):
         
         self.log_dir = log_dir
         self.device = device
         self.batch_size = batch_size
         self.generator = generator.to(device)
+        self.discriminator = discriminator.to(device)
+        self.replay_memory = replay_memory
         self.discriminator = discriminator.to(device)
         
         self.dataset = dataset
@@ -44,7 +48,6 @@ class Trainer:
         self.optimD = optim.AdamW(self.discriminator.parameters(), lr=learning_rate, betas=(0.9, 0.999), weight_decay=weight_decay)
         
         self.bce_logits_loss = torch.nn.BCEWithLogitsLoss() # − [y * log(x) + (1−y) * log(1−x)]
-        # self.bce_logits_loss = partial(sigmoid_focal_loss, alpha=0.25, gamma=2, reduction="mean")
         self.gan_weight = 1e-3
         self.vgg_weight = 2e-6 # rescale vgg fmaps to be of the same scale as mse loss
         self.l1_weight = 1
@@ -88,10 +91,12 @@ class Trainer:
         # classify real images and fakes properly
         real_loss = self.bce_logits_loss(dis_real, torch.ones_like(dis_real))
         generated_loss = self.bce_logits_loss(dis_fake, torch.zeros_like(dis_fake))
-        return real_loss + generated_loss
+        return 0.5*(real_loss + generated_loss)
 
-    def train_on_batch(self, sample):
+    def train_on_batch(self, sample: dict, addsample2replay: bool = True):
         self._step+=1
+        if self.replay_memory and addsample2replay:
+            self.replay_memory.add(sample)
         sample = {k: v.to(self.device) for k, v in sample.items()}
         inputs, targets, mask = sample["inputs"], sample["targets"], sample["mask"]
         # inputs, targets, mask, recep_mask = sample["inputs"], sample["targets"], sample["mask"], sample["recep_mask"]
@@ -139,6 +144,13 @@ class Trainer:
             self.train_on_batch(sample)
         self.on_epoch_end()
         
+    def train_on_memory(self):
+        assert self.replay_memory is not None
+        for _ in range(len(self.replay_memory)//self.batch_size):
+            sample = self.replay_memory.sample(self.batch_size, replace=False)
+            self.train_on_batch(sample, addsample2replay=False)
+        self.on_epoch_end()
+        
     def test_on_batch(self, samples=None):
         """ 
         Args:
@@ -182,17 +194,20 @@ class Trainer:
             path = self.log_dir
         if not os.path.exists(path):
             os.makedirs(path)
+        logging.info(f"Saving model and optimizer states in: {path}")
         
         torch.save({"generator": self.generator.state_dict(),
                     "discriminator": self.discriminator.state_dict()},
                    f"{path}/models.pth")
         torch.save({"generator": self.optimG.state_dict(),
-                    "discriminator": self.optimD.state_dict()},
+                    "discriminator": self.optimD.state_dict(),
+                    "step": self._step},
                    f"{path}/optimizers.pth")
         
     def restore(self, path=None):
         if path is None:
             path = self.log_dir
+        logging.info(f"Restoring model and optimizer states from: {path}")
         
         model_checkpoint = torch.load(f"{path}/models.pth")
         optim_checkpoint = torch.load(f"{path}/optimizers.pth")
@@ -200,4 +215,5 @@ class Trainer:
         self.discriminator.load_state_dict(model_checkpoint["discriminator"])
         self.optimG.load_state_dict(optim_checkpoint["generator"])
         self.optimD.load_state_dict(optim_checkpoint["discriminator"])
+        self._step = optim_checkpoint["step"]
     

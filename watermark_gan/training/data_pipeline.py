@@ -160,7 +160,7 @@ class WatermarkDataset(Dataset):
             draw.text(pos, text, fill=(255,255,255, opacity), font=font)
             
         # rotate text up to at most 45°
-        angle = random.random()/2 * 90
+        angle = random.random() * 45
         watermark_img = watermark_img.rotate(angle, resample=Image.BILINEAR)
         
         return watermark_img
@@ -179,6 +179,25 @@ class WatermarkDataset(Dataset):
         image = image.crop((left,upper, left+new_w,upper+new_w))
 
         return image
+    
+def create_test_image(img_path, pos, text, opacity, font_type, font_size):
+    with Image.open(img_path) as img:
+        img = img.convert("RGBA")
+        
+        width, height = img.size
+        new_w, new_h = 2**int(np.log2(width)), 2**int(np.log2(height))
+        upper, left = 0, 0
+        img = img.crop((left,upper, left+new_w,upper+new_h))
+
+        watermark = Image.new('RGBA', img.size, (0,0,0,0))
+        draw = ImageDraw.Draw(watermark)
+        # Creating Text
+        draw.text(pos, text, fill=(255,255,255, opacity), font=ImageFont.truetype(font_type, font_size))
+        
+        output = np.asarray(Image.alpha_composite(img, watermark)) 
+        output = uint8_to_float(output[...,:3])
+        return torch.FloatTensor(output).permute(2,0,1)
+    
     
     # def _gen_image(self, img):
     #     watermark_image_path = "D:/Programmieren/gans/datasets/watermarks/Download.png"
